@@ -181,6 +181,143 @@ def test_single_class_print_config_before_subcommand():
     assert cfg == {"i1": "0", "method1": {"m1": 2}}
 
 
+# multi-layered class tests
+
+
+class Layer3:
+    """Description of Layer3."""
+
+    def __init__(self, i3: str):
+        self.i3 = i3
+
+    def method3(self, m3: int):
+        """Description of method3"""
+        return "method3", self.i3, m3
+
+
+class Layer2:
+    """Description of Layer2."""
+
+    def __init__(self, i2: str):
+        self.i2 = i2
+
+    def method2(self, m2: int):
+        """Description of method2"""
+        return "method2", self.i2, m2
+
+    @property
+    def layer3(self) -> Layer3:
+        return Layer3(self.i2)
+
+
+class Layer1:
+    def __init__(self, i1: str = "d"):
+        self.i1 = i1
+
+    def method1(self, m1: int):
+        """Description of method1"""
+        return "method1", self.i1, m1
+
+    @property
+    def layer2(self) -> Layer2:
+        return Layer2(self.i1)
+
+
+@pytest.mark.parametrize(
+    ["expected", "args"],
+    [
+        (("method1", "0", 1), ["--i1=0", "method1", "1"]),
+        (("method2", "0", 1), ["--i1=0", "layer2", "method2", "1"]),
+        (("method3", "0", 1), ["--i1=0", "layer2", "layer3", "method3", "1"]),
+        (("method1", "d", 1), ["method1", "1"]),
+        (("method2", "d", 1), ["layer2", "method2", "1"]),
+        (("method3", "d", 1), ["layer2", "layer3", "method3", "1"]),
+        (("method1", "0", 1), ['--config={"i1": "0", "method1": {"m1": 1}}']),
+        (("method2", "0", 1), ['--config={"i1": "0", "layer2": {"method2": {"m2": 1}}}']),
+        (("method3", "0", 1), ['--config={"i1": "0", "layer2": {"layer3": {"method3": {"m3": 1}}}}']),
+        (("method1", "d", 1), ['--config={"method1": {"m1": 1}}']),
+        (("method2", "d", 1), ['--config={"layer2": {"method2": {"m2": 1}}}']),
+        (("method3", "d", 1), ['--config={"layer2": {"layer3": {"method3": {"m3": 1}}}}']),
+        (("method1", "d", 1), ["method1", '--config={"m1": 1}']),
+        (("method2", "d", 1), ["layer2", '--config={"method2": {"m2": 1}}']),
+        (("method3", "d", 1), ["layer2", "layer3", '--config={"method3": {"m3": 1}}']),
+    ],
+)
+def test_multi_layered_class_return(expected, args):
+    assert expected == CLI(Layer1, args=args)
+
+
+@pytest.mark.parametrize(
+    ["expected", "args"],
+    [
+        ("{method1,layer2}", ["--help"]),
+        ("{method2,layer3}", ["layer2", "--help"]),
+        ("{method3}", ["layer2", "layer3", "--help"]),
+    ],
+)
+def test_multi_layered_class_subcommand_help(expected, args):
+    out = get_cli_stdout(Layer1, args=args)
+    assert expected in out
+
+
+@pytest.mark.parametrize(
+    ["expected_choices", "expected_subcommands", "args"],
+    [
+        ("{method1,layer2}", ("method1", "Layer2"), ["--help"]),
+        ("{method2,layer3}", ("method2", "Layer3"), ["layer2", "--help"]),
+        ("{method3}", ("method3",), ["layer2", "layer3", "--help"]),
+    ],
+)
+def test_multi_layered_class_help(expected_choices, expected_subcommands, args):
+    out = get_cli_stdout(Layer1, args=args)
+    assert expected_choices in out
+    if docstring_parser_support:
+        for name in expected_subcommands:
+            assert f"Description of {name}" in out
+
+
+class EmptyLayer:
+    """Docstring of EmptyLayer."""
+
+
+class TopLayerWithEmptyLayer:
+    @property
+    def empty(self) -> EmptyLayer:
+        return EmptyLayer()
+
+
+class TopLayerWithDocstring:
+    @property
+    def with_doc(self) -> EmptyLayer:
+        """Docstring of with_doc."""
+        return EmptyLayer()
+
+    @property
+    def without_doc(self) -> EmptyLayer:
+        return EmptyLayer()
+
+
+def test_multi_layered_class_property_help():
+    out = get_cli_stdout(TopLayerWithDocstring, args=["--help"])
+    assert "with_doc            Docstring of with_doc." in out
+    assert "without_doc         Docstring of EmptyLayer." in out
+
+
+def test_multi_layered_class_without_methods():
+    expected = CLI(EmptyLayer, args=[])
+    actual = CLI(TopLayerWithEmptyLayer, args=["empty"])
+    assert type(actual) is type(expected)
+
+
+def test_multi_layered_class_without_methods_help():
+    expected = get_cli_stdout(EmptyLayer, args=["--help"])
+    actual = get_cli_stdout(TopLayerWithEmptyLayer, args=["empty", "--help"])
+    # Omit usage line.
+    expected = expected.split("\n\n", maxsplit=1)[1]
+    actual = actual.split("\n\n", maxsplit=1)[1]
+    assert actual == expected
+
+
 # function and class tests
 
 

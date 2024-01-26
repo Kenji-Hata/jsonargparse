@@ -1,13 +1,14 @@
 """Simple creation of command line interfaces."""
 
 import inspect
-from typing import Any, Callable, Dict, List, Optional, Type, Union
+from typing import Any, Callable, Dict, List, Optional, Type, Union, get_type_hints
 
 from ._actions import ActionConfigFile, _ActionPrintConfig, remove_actions
 from ._core import ArgumentParser
 from ._deprecated import deprecation_warning_cli_return_parser
 from ._namespace import Namespace, dict_to_namespace
 from ._optionals import get_doc_short_description
+from ._parameter_resolvers import is_property
 from ._util import default_config_option_help
 
 __all__ = ["CLI"]
@@ -148,16 +149,17 @@ def _add_subcommands(
                 remove_actions(subparser, (ActionConfigFile, _ActionPrintConfig))
 
 
-def _add_component_to_parser(component, parser, as_positional, fail_untyped, config_help):
+def _add_component_to_parser(component, parser, as_positional, fail_untyped, config_help, ignore_class_args=False):
     kwargs = dict(as_positional=as_positional, fail_untyped=fail_untyped, sub_configs=True)
     if inspect.isclass(component):
         subcommand_keys = [k for k, v in inspect.getmembers(component) if callable(v) and k[0] != "_"]
-        if not subcommand_keys:
+        subcomponent_keys = [k for k, v in inspect.getmembers(component) if is_property(v) and k[0] != "_"]
+        if not subcommand_keys and not subcomponent_keys:
             added_args = parser.add_class_arguments(component, as_group=False, **kwargs)
             if not parser.description:
                 parser.description = get_help_str(component, parser.logger)
             return added_args
-        added_args = parser.add_class_arguments(component, **kwargs)
+        added_args = parser.add_class_arguments(component, **kwargs) if not ignore_class_args else []
         subcommands = parser.add_subcommands(required=True)
         for key in subcommand_keys:
             description = get_help_str(getattr(component, key), parser.logger)
@@ -168,6 +170,18 @@ def _add_component_to_parser(component, parser, as_positional, fail_untyped, con
             if not added_subargs:
                 remove_actions(subparser, (ActionConfigFile, _ActionPrintConfig))
             subcommands.add_subcommand(key, subparser, help=get_help_str(getattr(component, key), parser.logger))
+        for key in subcomponent_keys:
+            subcomponent = get_type_hints(getattr(component, key).fget)["return"]
+            description = get_doc_short_description(getattr(component, key), logger=parser.logger)
+            if not description:
+                description = get_help_str(subcomponent, logger=parser.logger)
+            subparser = type(parser)(description=description)
+            subparser.add_argument("--config", action=ActionConfigFile, help=config_help)
+            subcommands.add_subcommand(key, subparser, help=description)
+            added_subargs = _add_component_to_parser(
+                subcomponent, subparser, as_positional, fail_untyped, config_help, ignore_class_args=True
+            )
+            added_args += [f"{key}.{a}" for a in added_subargs]
     else:
         added_args = parser.add_function_arguments(component, as_group=False, **kwargs)
         if not parser.description:
@@ -185,4 +199,13 @@ def _run_component(component, cfg):
     subcommand_cfg = cfg.pop(subcommand, {})
     subcommand_cfg.pop("config", None)
     component_obj = component(**cfg)
-    return getattr(component_obj, subcommand)(**subcommand_cfg)
+    component_obj = getattr(component_obj, subcommand)
+    while "subcommand" in subcommand_cfg:
+        subcommand = subcommand_cfg.pop("subcommand")
+        subcommand_cfg = subcommand_cfg.pop(subcommand, {})
+        subcommand_cfg.pop("config", None)
+        component_obj = getattr(component_obj, subcommand)
+    if not callable(component_obj):
+        assert not subcommand_cfg
+        return component_obj
+    return component_obj(**subcommand_cfg)
